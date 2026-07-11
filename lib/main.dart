@@ -3,247 +3,334 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
-void main() => runApp(const MaterialApp(home: SensorRecorder()));
-
-class SensorRecorder extends StatefulWidget {
-  const SensorRecorder({super.key});
-  @override
-  _SensorRecorderState createState() => _SensorRecorderState();
+void main() {
+  runApp(const MyApp());
 }
 
-class _SensorRecorderState extends State<SensorRecorder> {
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @key
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'IMU & GPS Recorder',
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        primarySwatch: Colors.deepPurple,
+        scaffoldBackgroundColor: const Color(0xFF121212),
+      ),
+      home: const TrackerHome(),
+    );
+  }
+}
+
+class TrackerHome extends StatefulWidget {
+  const TrackerHome({super.key});
+
+  @override
+  State<TrackerHome> createState() => _TrackerHomeState();
+}
+
+class _TrackerHomeState extends State<TrackerHome> {
+  // Status nagrywania i licznik danych
   bool _isRecording = false;
-  IOSink? _fileSink;
-  Timer? _samplingTimer;
-  
-  StreamSubscription? _accelSub;
-  StreamSubscription? _gyroSub;
-  StreamSubscription? _baroSub;
-  StreamSubscription? _gpsSub;
+  int _lineCount = 0;
+  Timer? _timer;
+  int _secondsElapsed = 0;
 
-  // Cache na dane
-  double _ax = 0, _ay = 0, _az = 0;
-  double _gx = 0, _gy = 0, _gz = 0;
-  double _pressure = 0; 
-  double? _lat, _lon, _alt;
-  
-  int _linesCount = 0;
-  String _filePath = "Brak aktywnego zapisu";
-  int? _lastTs;
+  // Przechowywanie bieżących wartości sensorów
+  String _accelerometerData = "X: 0.0, Y: 0.0, Z: 0.0";
+  String _gyroscopeData = "X: 0.0, Y: 0.0, Z: 0.0";
+  String _gpsData = "Lat: 0.0, Lon: 0.0, Alt: 0.0, Speed: 0.0";
+  String _barometerData = "1013.25 hPa (Domyślne)"; // Wartość bazowa/odniesienia
 
-  List<FileSystemEntity> _savedFiles = [];
+  // Strumienie i subskrypcje
+  final List<StreamSubscription> _streamSubscriptions = [];
+  Position? _currentPosition;
+  
+  // Bufor zapisu do pliku CSV
+  final List<String> _csvRows = [];
 
   @override
   void initState() {
     super.initState();
-    _loadSavedFiles();
+    _initLivePreviews();
   }
 
-  Future<void> _loadSavedFiles() async {
-    final directory = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
-    if (await directory.exists()) {
-      final files = directory.listSync();
-      final csvFiles = files.where((file) => file.path.endsWith('.csv') && file.path.contains('research_sync_')).toList();
+  // Stały podgląd danych na ekranie (niezależny od nagrywania)
+  void _initLivePreviews() {
+    _streamSubscriptions.add(
+      accelerometerEventStream(samplingPeriod: const Duration(milliseconds: 10)).listen((event) {
+        if (mounted) {
+          setState(() {
+            _accelerometerData = "X: ${event.x.toStringAsFixed(2)}, Y: ${event.y.toStringAsFixed(2)}, Z: ${event.z.toStringAsFixed(2)}";
+          });
+          if (_isRecording) _recordRow("ACC", "${event.x};${event.y};${event.z}");
+        }
+      }),
+    );
+
+    _streamSubscriptions.add(
+      gyroscopeEventStream(samplingPeriod: const Duration(milliseconds: 10)).listen((event) {
+        if (mounted) {
+          setState(() {
+            _gyroscopeData = "X: ${event.x.toStringAsFixed(2)}, Y: ${event.y.toStringAsFixed(2)}, Z: ${event.z.toStringAsFixed(2)}";
+          });
+          if (_isRecording) _recordRow("GYRO", "${event.x};${event.y};${event.z}");
+        }
+      }),
+    );
+
+    // Opcjonalny nasłuch barometru (jeśli plugin udostępnia barometerEventStream)
+    try {
+      _streamSubscriptions.add(
+        barometerEventStream(samplingPeriod: const Duration(milliseconds: 20)).listen((event) {
+          if (mounted) {
+            setState(() {
+              _barometerData = "${event.pressure.toStringAsFixed(2)} hPa";
+            });
+            if (_isRecording) _recordRow("BARO", "${event.pressure}");
+          }
+        }),
+      );
+    } catch (_) {
+      // Jeśli urządzenie lub system nie obsługuje bezpośredniego strumienia barometru z sensors_plus
+    }
+  }
+
+  // Funkcja sprawdzająca i żądająca uprawnień dedykowana dla iOS i Androida
+  Future<bool> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      Map<Permission, PermissionStatus> statuses = await [
+        Permission.location,
+        Permission.sensors,
+      ].request();
       
-      csvFiles.sort((a, b) => b.path.compareTo(a.path));
+      return statuses[Permission.location] == PermissionStatus.granted &&
+             statuses[Permission.sensors] == PermissionStatus.granted;
+    } else if (Platform.isIOS) {
+      // Kluczowe obejście: Na iOS prosimy TYLKO o lokalizację. 
+      // Czujniki ruchu nie posiadają dedykowanego monitu prywatności w permission_handler.
+      PermissionStatus locationStatus = await Permission.location.request();
+      return locationStatus == PermissionStatus.granted;
+    }
+    return false;
+  }
+
+  // Główna funkcja przycisku START / STOP
+  void _toggleRecording() async {
+    if (_isRecording) {
+      // STOP NAGRYWANIA
+      _timer?.cancel();
+      setState(() {
+        _isRecording = false;
+      });
+      _saveAndShareCSV();
+    } else {
+      // START NAGRYWANIA
+      bool hasPermission = await _requestPermissions();
+      if (!hasPermission) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Błąd: Nie przyznano wymaganych uprawnień!")),
+          );
+        }
+        return;
+      }
+
+      // Czyszczenie starego bufora i nagłówek CSV
+      _csvRows.clear();
+      _csvRows.add("Timestamp_ms;Sensor_Type;Data_Fields");
+      _secondsElapsed = 0;
+      _lineCount = 0;
 
       setState(() {
-        _savedFiles = csvFiles;
+        _isRecording = true;
       });
+
+      // Uruchomienie stoperu i pobierania pozycji GPS
+      _startTimer();
+      _startGpsTracking();
     }
   }
 
-  Future<void> _startRecording() async {
-    await [Permission.location, Permission.sensors].request();
-    
-    final directory = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
-    final String timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-    final File file = File('${directory.path}/research_sync_$timestamp.csv');
-    
-    _fileSink = file.openWrite();
-    _fileSink?.writeln("ts,accX,accY,accZ,gyroX,gyroY,gyroZ,pressure,lat,lon,alt");
-
-    setState(() {
-      _isRecording = true;
-      _filePath = file.path;
-      _linesCount = 0;
-    });
-
-    _accelSub = accelerometerEventStream(samplingPeriod: SensorInterval.fastestInterval).listen((e) {
-      _ax = e.x; _ay = e.y; _az = e.z;
-    });
-
-    _gyroSub = gyroscopeEventStream(samplingPeriod: SensorInterval.fastestInterval).listen((e) {
-      _gx = e.x; _gy = e.y; _gz = e.z;
-    });
-
-    // W pełni zabezpieczone asynchroniczne nasłuchiwanie barometru
-    try {
-      _baroSub = barometerEventStream(samplingPeriod: SensorInterval.fastestInterval).listen(
-        (e) {
-          _pressure = e.pressure;
-        },
-        onError: (error) {
-          // Tutaj łapiemy błąd, który leciał asynchronicznie w strumieniu
-          debugPrint("Barometr niedostępny (error w strumieniu): $error");
-          setState(() {
-            _pressure = -1.0; 
-          });
-        },
-        cancelOnError: false,
-      );
-    } catch (e) {
-      // Awaryjny catch synchroniczny
-      debugPrint("Barometr błąd inicjalizacji: $e");
-      _pressure = -1.0; 
-    }
-
-    _gpsSub = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.best)
-    ).listen((p) {
-      _lat = p.latitude; _lon = p.longitude; _alt = p.altitude;
-    });
-
-    // Sampler 100Hz (zapis co 10ms)
-    _samplingTimer = Timer.periodic(const Duration(milliseconds: 10), (timer) {
-      final int ts = DateTime.now().millisecondsSinceEpoch;
-      if (ts == _lastTs) return;
-      _lastTs = ts;
-
-      final String row = "$ts,$_ax,$_ay,$_az,$_gx,$_gy,$_gz,$_pressure,${_lat ?? ''},${_lon ?? ''},${_alt ?? ''}";
-      _fileSink?.writeln(row);
-      
-      _linesCount++;
-
-      if (_linesCount % 10 == 0) {
-        setState(() {});
+  void _startTimer() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _secondsElapsed++;
+        });
       }
     });
   }
 
-  Future<void> _stopRecording() async {
-    await _accelSub?.cancel();
-    await _gyroSub?.cancel();
-    await _baroSub?.cancel(); 
-    await _gpsSub?.cancel();
-    _samplingTimer?.cancel();
-    
-    await _fileSink?.flush();
-    await _fileSink?.close();
-    
-    setState(() {
-      _isRecording = false;
+  void _startGpsTracking() async {
+    // Cykliczne odpytywanie o pozycję GPS podczas nagrywania
+    Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 0,
+      ),
+    ).listen((Position position) {
+      if (!_isRecording) return;
+      _currentPosition = position;
+      if (mounted) {
+        setState(() {
+          _gpsData = "Lat: ${position.latitude.toStringAsFixed(5)}, Lon: ${position.longitude.toStringAsFixed(5)}, Alt: ${position.altitude.toStringAsFixed(1)}, Spd: ${position.speed.toStringAsFixed(2)}";
+        });
+      }
+      _recordRow("GPS", "${position.latitude};${position.longitude};${position.altitude};${position.speed};${position.accuracy}");
     });
-
-    await _loadSavedFiles();
   }
 
-  void _shareFile(String path) {
-    Share.shareXFiles([XFile(path)], text: 'Moje dane z czujników IMU/Baro/GPS');
+  void _recordRow(String sensorType, String dataFields) {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    _csvRows.add("$timestamp;$sensorType;$dataFields");
+    if (mounted) {
+      setState(() {
+        _lineCount++;
+      });
+    }
+  }
+
+  // Zapis do lokalnej pamięci podręcznej i wywołanie systemowego udostępniania plików
+  void _saveAndShareCSV() async {
+    if (_csvRows.length <= 1) return;
+
+    try {
+      final directory = await getTemporaryDirectory();
+      final filename = "imu_log_${DateTime.now().millisecondsSinceEpoch}.csv";
+      final file = File('${directory.path}/$filename');
+
+      // Zapisujemy całą tablicę jako ciąg tekstowy rozdzielany nową linią
+      await file.writeAsString(_csvRows.join('\n'));
+
+      // Wywołanie natywnego udostępniania plików (Share Sheet) na iOS/Androidzie
+      await Share.shareXFiles([XFile(file.path)], text: 'Mój log pomiarowy CSV z czujników IMU i GPS.');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Błąd zapisu pliku: $e")),
+        );
+      }
+    }
+  }
+
+  String _formatTime(int totalSeconds) {
+    int minutes = totalSeconds ~/ 60;
+    int seconds = totalSeconds % 60;
+    return "${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}";
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    for (var sub in _streamSubscriptions) {
+      sub.cancel();
+    }
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("IMU Live Debug (100Hz)"),
-        backgroundColor: Colors.indigo,
-        foregroundColor: Colors.white,
+        title: const Text('IMU & GPS CSV Recorder'),
+        centerTitle: true,
+        elevation: 0,
+        backgroundColor: Colors.transparent,
       ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _debugCard("Akcelerometr [m/s²]", "X: ${_ax.toStringAsFixed(2)}, Y: ${_ay.toStringAsFixed(2)}, Z: ${_az.toStringAsFixed(2)}", Colors.blue),
-              _debugCard("Żyroskop [rad/s]", "X: ${_gx.toStringAsFixed(2)}, Y: ${_gy.toStringAsFixed(2)}, Z: ${_gz.toStringAsFixed(2)}", Colors.green),
-              _debugCard(
-                "Barometr", 
-                _pressure == -1.0 ? "Sensor niedostępny" : "${_pressure.toStringAsFixed(2)} hPa", 
-                Colors.purple
-              ), 
-              _debugCard("GPS", _lat != null ? "Lat: ${_lat!.toStringAsFixed(4)}, Lon: ${_lon!.toStringAsFixed(4)}" : "Szukanie sygnału...", Colors.orange),
-              const Divider(height: 30),
-              Center(
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Panel stanu nagrywania
+            Card(
+              color: _isRecording ? Colors.red.withOpacity(0.2) : Colors.deepPurple.withOpacity(0.1),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
                 child: Column(
                   children: [
-                    Text("Linii w pliku: $_linesCount", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                    const SizedBox(height: 10),
-                    SelectableText(_filePath, style: const TextStyle(fontSize: 10, color: Colors.grey), textAlign: TextAlign.center),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 60,
-                      child: ElevatedButton(
-                        onPressed: _isRecording ? _stopRecording : _startRecording,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _isRecording ? Colors.red : Colors.green[700],
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
-                        ),
-                        child: Text(
-                          _isRecording ? "STOP I ZAPISZ" : "START NAGRYWANIA",
-                          style: const TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold),
-                        ),
+                    Text(
+                      _isRecording ? "NAGRYWANIE AKTYWNE" : "URZĄDZENIE GOTOWE",
+                      style: TextStyle(
+                        fontSize: 18, 
+                        fontWeight: FontWeight.bold, 
+                        color: _isRecording ? Colors.redAccent : Colors.deepPurpleAccent
                       ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        Column(
+                          children: [
+                            const Text("Czas trwania", style: TextStyle(color: Colors.grey)),
+                            Text(_formatTime(_secondsElapsed), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        Column(
+                          children: [
+                            const Text("Zapisane linie", style: TextStyle(color: Colors.grey)),
+                            Text("$_lineCount", style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-              const Padding(
-                padding: EdgeInsets.only(top: 30, bottom: 10),
-                child: Text("Zapisane sesje (Najnowsze wyżej):", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ),
+            const SizedBox(height: 16),
+            
+            // Podgląd na żywo z sensorów
+            Expanded(
+              child: ListView(
+                children: [
+                  _buildSensorCard("Akcelerometr (IMU)", _accelerometerData, Icons.import_export, Colors.blueAccent),
+                  _buildSensorCard("Żyroskop (IMU)", _gyroscopeData, Icons.sync, Colors.tealAccent),
+                  _buildSensorCard("Lokalizacja (GPS)", _gpsData, Icons.gps_fixed, Colors.greenAccent),
+                  _buildSensorCard("Barometr (Ciśnienie)", _barometerData, Icons.compress, Colors.purpleAccent),
+                ],
               ),
-              _savedFiles.isEmpty
-                  ? const Text("Brak zapisanych plików.", style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic))
-                  : ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: _savedFiles.length,
-                      itemBuilder: (context, index) {
-                        final file = _savedFiles[index];
-                        final fileName = file.path.split('/').last;
-                        return Card(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          child: ListTile(
-                            leading: const Icon(Icons.insert_drive_file, color: Colors.indigo),
-                            title: Text(fileName, style: const TextStyle(fontSize: 12)),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.share, color: Colors.blue),
-                              onPressed: () => _shareFile(file.path),
-                              tooltip: 'Udostępnij plik',
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ],
-          ),
+            ),
+
+            // Główny przycisk operacyjny
+            ElevatedButton(
+              onPressed: _toggleRecording,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _isRecording ? Colors.red : Colors.deepPurple,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: Text(
+                _isRecording ? "STOP I UDOSTĘPNIJ PLIK" : "START NAGRYWANIA",
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _debugCard(String title, String data, Color color) {
+  Widget _buildSensorCard(String title, String data, IconData icon, Color color) {
     return Card(
-      elevation: 4,
       margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ListTile(
-        leading: CircleAvatar(backgroundColor: color, radius: 10),
-        title: Text(title, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-        subtitle: Text(
-          data, 
-          style: const TextStyle(
-            fontSize: 18, 
-            fontFamily: 'monospace', 
-            fontWeight: FontWeight.bold, 
-            color: Colors.black
-          )
+        leading: Icon(icon, color: color, size: 30),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 6.0),
+          child: Text(data, style: const TextStyle(fontFamily: 'monospace', fontSize: 13, color: Colors.white)),
         ),
       ),
     );
