@@ -19,6 +19,13 @@ workflows:
       - name: Get Flutter packages
         script: |
           flutter packages pub get
+      - name: Pre-generate configuration and Inject Permission Macros
+        script: |
+          # Generujemy domyślne środowisko iOS
+          flutter build ios --config-only
+          
+          # Wstrzykujemy flagi preprocesora bezpośrednio do konfiguracji Xcode zamiast Podfile
+          echo "GCC_PREPROCESSOR_DEFINITIONS =\$(inherited) PERMISSION_LOCATION=1 PERMISSION_SENSORS=1" >> ios/Flutter/Generated.xcconfig
       - name: Build iOS project without signing
         script: |
           flutter build ios --no-codesign --release
