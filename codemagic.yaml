@@ -19,21 +19,28 @@ workflows:
       - name: Get Flutter packages
         script: |
           flutter packages pub get
-      - name: Pre-generate configuration and Force Manual Signing Style
+      - name: Pre-generate configuration and Inject Permission Macros
         script: |
-          # Generujemy konfigurację środowiska
+          # Budujemy bazę projektu
           flutter build ios --config-only
           
-          # 1. Wstrzykujemy makra uprawnień lokalizacji i ruchu dla iOS
+          # Wstrzykujemy makra uprawnień lokalizacji i ruchu dla iOS
           echo "GCC_PREPROCESSOR_DEFINITIONS =\$(inherited) PERMISSION_LOCATION=1 PERMISSION_SENSORS=1" >> ios/Flutter/Generated.xcconfig
           
-          # 2. Przestawiamy projekt Xcode z automatu na tryb Manualny, by zignorował błąd o "Development Team"
-          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' ios/Runner.xcodeproj/project.pbxproj
-          sed -i '' 's/DevelopmentTeam = .*/DevelopmentTeam = "";/g' ios/Runner.xcodeproj/project.pbxproj
-          sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = .*/PROVISIONING_PROFILE_SPECIFIER = "";/g' ios/Runner.xcodeproj/project.pbxproj
+          # Instalujemy pody dla CocoaPods, żeby Xcode widział wtyczki
+          cd ios && pod install
       - name: Build iOS project without signing
         script: |
-          # Budujemy czysty, niepodpisany projekt
-          flutter build ios --no-codesign --release
+          # Budujemy bezpośrednio przez xcodebuild, wymuszając brak podpisywania i pomijając sprawdzanie Team ID
+          cd ios
+          xcodebuild -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            COMPILER_INDEX_STORE_ENABLE=NO
     artifacts:
-      - build/ios/iphoneos/Runner.app
+      - ios/build/Runner.app
