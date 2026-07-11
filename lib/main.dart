@@ -147,9 +147,8 @@ class _TrackerHomeState extends State<TrackerHome> {
       PermissionStatus status = await Permission.location.request();
       return status == PermissionStatus.granted;
     } else if (Platform.isIOS) {
-      // NA iOS: Pytamy o Ruch i sprawność (wymagane do barometru przez CoreMotion)
-      PermissionStatus motionStatus = await Permission.sensors.request();
-      
+      // Na iOS sprawdzamy WYŁĄCZNIE lokalizację za pomocą Geolocatora.
+      // Czujnik ruchu/barometru zainicjalizuje się sam w tle.
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) return false;
 
@@ -158,8 +157,8 @@ class _TrackerHomeState extends State<TrackerHome> {
         permission = await Geolocator.requestPermission();
       }
       
-      return (motionStatus == PermissionStatus.granted) && 
-             (permission == LocationPermission.whileInUse || permission == LocationPermission.always);
+      return permission == LocationPermission.whileInUse || 
+             permission == LocationPermission.always;
     }
     return false;
   }
@@ -177,7 +176,7 @@ class _TrackerHomeState extends State<TrackerHome> {
       if (!hasPermission) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Błąd: Brak wymaganych uprawnień (GPS / Ruch i Sprawność)!")),
+            const SnackBar(content: Text("Błąd: Nie przyznano wymaganych uprawnień do lokalizacji GPS!")),
           );
         }
         return;
