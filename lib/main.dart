@@ -49,7 +49,7 @@ class _TrackerHomeState extends State<TrackerHome> {
 
   final List<StreamSubscription> _streamSubscriptions = [];
   
-  // Ostatni znany stan czujników (używany do tworzenia spójnej struktury wiersza)
+  // Ostatni znany stan czujników do tworzenia struktury wiersza
   double _curAccX = 0.0;
   double _curAccY = 0.0;
   double _curAccZ = 0.0;
@@ -62,7 +62,7 @@ class _TrackerHomeState extends State<TrackerHome> {
   String _curLon = "";
   String _curAlt = "";
 
-  // Bufor zapisu do pliku tekstowego
+  // Bufor zapisu do pliku CSV
   final List<String> _csvRows = [];
 
   @override
@@ -71,7 +71,7 @@ class _TrackerHomeState extends State<TrackerHome> {
     _initLivePreviews();
   }
 
-  // Stały podgląd i asynchroniczna aktualizacja stanu
+  // Podgląd i asynchroniczna aktualizacja stanu
   void _initLivePreviews() {
     _streamSubscriptions.add(
       accelerometerEventStream(samplingPeriod: const Duration(milliseconds: 10)).listen((event) {
@@ -81,12 +81,10 @@ class _TrackerHomeState extends State<TrackerHome> {
           });
         }
         
-        // Aktualizacja stanu IMU
         _curAccX = event.x;
         _curAccY = event.y;
         _curAccZ = event.z;
         
-        // Zapis wiersza przy każdej zmianie wysokiej częstotliwości (IMU)
         if (_isRecording) _recordCurrentState();
       }),
     );
@@ -99,7 +97,6 @@ class _TrackerHomeState extends State<TrackerHome> {
           });
         }
         
-        // Aktualizacja stanu żyroskopu
         _curGyroX = event.x;
         _curGyroY = event.y;
         _curGyroZ = event.z;
@@ -121,18 +118,14 @@ class _TrackerHomeState extends State<TrackerHome> {
     } catch (_) {}
   }
 
-  // Funkcja budująca pojedynczy, zunifikowany wiersz danych rozdzielany tabulatorami (\t)
+  // Budowanie zunifikowanego wiersza CSV (rozdzielanego przecinkami)
   void _recordCurrentState() {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     
-    // Tworzenie struktury: ts accX accY accZ gyroX gyroY gyroZ lat lon alt
-    final buffer = StringBuffer();
-    buffer.write("$timestamp\t");
-    buffer.write("$_curAccX\t$_curAccY\t$_curAccZ\t");
-    buffer.write("$_curGyroX\t$_curGyroY\t$_curGyroZ\t");
-    buffer.write("$_curLat\t$_curLon\t$_curAlt");
+    // Format: ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt
+    final row = "$timestamp,$_curAccX,$_curAccY,$_curAccZ,$_curGyroX,$_curGyroY,$_curGyroZ,$_curLat,$_curLon,$_curAlt";
     
-    _csvRows.add(buffer.toString());
+    _csvRows.add(row);
     
     if (mounted) {
       setState(() {
@@ -181,10 +174,9 @@ class _TrackerHomeState extends State<TrackerHome> {
         return;
       }
 
-      // Reset zmiennych przed nową sesją
       _csvRows.clear();
-      // Nagłówek rozdzielany tabulatorami zgodnie z Twoim wzorem
-      _csvRows.add("ts\taccX\taccY\taccZ\tgyroX\tgyroY\tgyroZ\tlat\tlon\talt");
+      // Czystszy, standardowy nagłówek CSV rozdzielany przecinkami
+      _csvRows.add("ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt");
       
       _curAccX = 0; _curAccY = 0; _curAccZ = 0;
       _curGyroX = 0; _curGyroY = 0; _curGyroZ = 0;
@@ -226,7 +218,6 @@ class _TrackerHomeState extends State<TrackerHome> {
         });
       }
       
-      // Aktualizacja globalnego stanu GPS (od teraz kolejne linie z IMU go uwzględnią)
       _curLat = position.latitude.toString();
       _curLon = position.longitude.toString();
       _curAlt = position.altitude.toString();
@@ -238,8 +229,8 @@ class _TrackerHomeState extends State<TrackerHome> {
 
     try {
       final directory = await getTemporaryDirectory();
-      // Nadajemy rozszerzenie .txt lub .csv – tabulatory świetnie czyta np. Excel lub MATLAB
-      final filename = "sensor_log_${DateTime.now().millisecondsSinceEpoch}.txt";
+      // Prawidłowe rozszerzenie .csv
+      final filename = "sensor_log_${DateTime.now().millisecondsSinceEpoch}.csv";
       final file = File('${directory.path}/$filename');
 
       await file.writeAsString(_csvRows.join('\n'));
@@ -251,7 +242,7 @@ class _TrackerHomeState extends State<TrackerHome> {
 
       await Share.shareXFiles(
         [XFile(file.path)], 
-        text: 'Mój uporządkowany log macierzowy IMU i GPS.',
+        text: 'Mój uporządkowany log CSV (IMU + GPS).',
         sharePositionOrigin: position,
       );
     } catch (e) {
@@ -282,7 +273,7 @@ class _TrackerHomeState extends State<TrackerHome> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Matrix Sensor Recorder'),
+        title: const Text('IMU & GPS CSV Recorder'),
         centerTitle: true,
         elevation: 0,
         backgroundColor: Colors.transparent,
@@ -300,7 +291,7 @@ class _TrackerHomeState extends State<TrackerHome> {
                 child: Column(
                   children: [
                     Text(
-                      _isRecording ? "NAGRYWANIE MACIERZY" : "URZĄDZENIE READY",
+                      _isRecording ? "NAGRYWANIE AKTYWNE" : "URZĄDZENIE GOTOWE",
                       style: TextStyle(
                         fontSize: 18, 
                         fontWeight: FontWeight.bold, 
@@ -348,7 +339,7 @@ class _TrackerHomeState extends State<TrackerHome> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               child: Text(
-                _isRecording ? "ZAKOŃCZ I EKSPORTUJ LOG" : "URUCHOM ZAPIS DANYCH",
+                _isRecording ? "ZAKOŃCZ I EKSPORTUJ CSV" : "URUCHOM ZAPIS DANYCH",
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
               ),
             ),
