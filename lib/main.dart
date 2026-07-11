@@ -46,7 +46,7 @@ class _TrackerHomeState extends State<TrackerHome> {
   String _accelerometerData = "X: 0.0, Y: 0.0, Z: 0.0";
   String _gyroscopeData = "X: 0.0, Y: 0.0, Z: 0.0";
   String _gpsData = "Lat: 0.0, Lon: 0.0, Alt: 0.0, Speed: 0.0";
-  String _barometerData = "1013.25 hPa (Domyślne)"; // Wartość bazowa/odniesienia
+  String _barometerData = "1013.25 hPa (Domyślne)";
 
   // Strumienie i subskrypcje
   final List<StreamSubscription> _streamSubscriptions = [];
@@ -85,7 +85,6 @@ class _TrackerHomeState extends State<TrackerHome> {
       }),
     );
 
-    // Opcjonalny nasłuch barometru (jeśli plugin udostępnia barometerEventStream)
     try {
       _streamSubscriptions.add(
         barometerEventStream(samplingPeriod: const Duration(milliseconds: 20)).listen((event) {
@@ -97,12 +96,10 @@ class _TrackerHomeState extends State<TrackerHome> {
           }
         }),
       );
-    } catch (_) {
-      // Jeśli urządzenie lub system nie obsługuje bezpośredniego strumienia barometru z sensors_plus
-    }
+    } catch (_) {}
   }
 
-  // Funkcja sprawdzająca i żądająca uprawnień dedykowana dla iOS i Androida
+  // Ostateczna, bezkompromisowa metoda żądania uprawnień
   Future<bool> _requestPermissions() async {
     if (Platform.isAndroid) {
       Map<Permission, PermissionStatus> statuses = await [
@@ -113,10 +110,21 @@ class _TrackerHomeState extends State<TrackerHome> {
       return statuses[Permission.location] == PermissionStatus.granted &&
              statuses[Permission.sensors] == PermissionStatus.granted;
     } else if (Platform.isIOS) {
-      // Kluczowe obejście: Na iOS prosimy TYLKO o lokalizację. 
-      // Czujniki ruchu nie posiadają dedykowanego monitu prywatności w permission_handler.
-      PermissionStatus locationStatus = await Permission.location.request();
-      return locationStatus == PermissionStatus.granted;
+      // NA iOS: Omijamy kapryśny pakiet permission_handler dla GPS i wymuszamy 
+      // monit natywny bezpośrednio z silnika geolocatora rozmawiającego z CLLocationManager.
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        return false;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      
+      // Zwracamy true, jeśli użytkownik kliknął "Zezwól zawsze" lub "Podczas używania"
+      return permission == LocationPermission.whileInUse || 
+             permission == LocationPermission.always;
     }
     return false;
   }
@@ -136,7 +144,7 @@ class _TrackerHomeState extends State<TrackerHome> {
       if (!hasPermission) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Błąd: Nie przyznano wymaganych uprawnień!")),
+            const SnackBar(content: Text("Błąd: Nie przyznano wymaganych uprawnień do GPS!")),
           );
         }
         return;
@@ -168,8 +176,7 @@ class _TrackerHomeState extends State<TrackerHome> {
     });
   }
 
-  void _startGpsTracking() async {
-    // Cykliczne odpytywanie o pozycję GPS podczas nagrywania
+  void _startGpsTracking() {
     Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.bestForNavigation,
@@ -206,10 +213,9 @@ class _TrackerHomeState extends State<TrackerHome> {
       final filename = "imu_log_${DateTime.now().millisecondsSinceEpoch}.csv";
       final file = File('${directory.path}/$filename');
 
-      // Zapisujemy całą tablicę jako ciąg tekstowy rozdzielany nową linią
       await file.writeAsString(_csvRows.join('\n'));
 
-      // Wywołanie natywnego udostępniania plików (Share Sheet) na iOS/Androidzie
+      // Wywołanie systemowego okna udostępniania
       await Share.shareXFiles([XFile(file.path)], text: 'Mój log pomiarowy CSV z czujników IMU i GPS.');
     } catch (e) {
       if (mounted) {
