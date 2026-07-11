@@ -29,18 +29,19 @@ workflows:
           
           # Instalujemy pody dla CocoaPods, żeby Xcode widział wtyczki
           cd ios && pod install
-      - name: Build iOS project without signing
+      - name: Build iOS project without signing 
         script: |
-          # Budujemy bezpośrednio przez xcodebuild, wymuszając brak podpisywania i pomijając sprawdzanie Team ID
           cd ios
+          # Dodajemy flagę -derivedDataPath, która wymusi zapis w znanym miejscu
           xcodebuild -workspace Runner.xcworkspace \
             -scheme Runner \
             -configuration Release \
             -sdk iphoneos \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             PROVISIONING_PROFILE="" \
             COMPILER_INDEX_STORE_ENABLE=NO
     artifacts:
-      - ios/build/Runner.app
+      - ios/build/Build/Products/Release-iphoneos/Runner.app
