@@ -72,5 +72,7 @@
     <string>Aplikacja wymaga stałego dostępu do lokalizacji w celu poprawnego nagrywania trasy w pliku CSV.</string>
     <key>NSMotionUsageDescription</key>
     <string>Aplikacja wymaga dostępu do czujników ruchu (akcelerometr, żyroskop), aby rejestrować parametry fizyczne na potrzeby badań.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Aplikacja wymaga dostępu do czujnika barometru w celu precyzyjnego rejestrowania zmian ciśnienia i wysokości podczas pomiarów.</string>
 </dict>
 </plist>

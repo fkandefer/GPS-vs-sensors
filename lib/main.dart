@@ -48,6 +48,7 @@ class _TrackerHomeState extends State<TrackerHome> {
   String _barometerData = "1013.25 hPa (Domyślne)";
 
   final List<StreamSubscription> _streamSubscriptions = [];
+  StreamSubscription<Position>? _gpsSubscription;
   
   // Ostatni znany stan czujników do tworzenia struktury wiersza
   double _curAccX = 0.0;
@@ -61,8 +62,6 @@ class _TrackerHomeState extends State<TrackerHome> {
   String _curLat = "";
   String _curLon = "";
   String _curAlt = "";
-
-  // Bieżąca wartość barometru (domyślnie -1 w przypadku braku sensora)
   double _curBaro = -1.0;
 
   // Bufor zapisu do pliku CSV
@@ -108,7 +107,6 @@ class _TrackerHomeState extends State<TrackerHome> {
       }),
     );
 
-    // Bezpieczny nasłuch barometru odporny na brak sensora w urządzeniu
     _streamSubscriptions.add(
       barometerEventStream(samplingPeriod: const Duration(milliseconds: 20)).listen(
         (event) {
@@ -125,20 +123,16 @@ class _TrackerHomeState extends State<TrackerHome> {
               _barometerData = "Brak czujnika barometru";
             });
           }
-          _curBaro = -1.0; // Wymuszenie wartości -1 przy błędzie/braku sprzętu
+          _curBaro = -1.0;
         },
         cancelOnError: false,
       ),
     );
   }
 
-  // Budowanie zunifikowanego wiersza CSV (rozdzielanego przecinkami)
   void _recordCurrentState() {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-    
-    // Format: ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt,baro
     final row = "$timestamp,$_curAccX,$_curAccY,$_curAccZ,$_curGyroX,$_curGyroY,$_curGyroZ,$_curLat,$_curLon,$_curAlt,$_curBaro";
-    
     _csvRows.add(row);
     
     if (mounted) {
@@ -150,13 +144,12 @@ class _TrackerHomeState extends State<TrackerHome> {
 
   Future<bool> _requestPermissions() async {
     if (Platform.isAndroid) {
-      Map<Permission, PermissionStatus> statuses = await [
-        Permission.location,
-        Permission.sensors,
-      ].request();
-      return statuses[Permission.location] == PermissionStatus.granted &&
-             statuses[Permission.sensors] == PermissionStatus.granted;
+      PermissionStatus status = await Permission.location.request();
+      return status == PermissionStatus.granted;
     } else if (Platform.isIOS) {
+      // NA iOS: Pytamy o Ruch i sprawność (wymagane do barometru przez CoreMotion)
+      PermissionStatus motionStatus = await Permission.sensors.request();
+      
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) return false;
 
@@ -164,8 +157,9 @@ class _TrackerHomeState extends State<TrackerHome> {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
-      return permission == LocationPermission.whileInUse || 
-             permission == LocationPermission.always;
+      
+      return (motionStatus == PermissionStatus.granted) && 
+             (permission == LocationPermission.whileInUse || permission == LocationPermission.always);
     }
     return false;
   }
@@ -173,6 +167,7 @@ class _TrackerHomeState extends State<TrackerHome> {
   void _toggleRecording() async {
     if (_isRecording) {
       _timer?.cancel();
+      _gpsSubscription?.cancel();
       setState(() {
         _isRecording = false;
       });
@@ -182,20 +177,19 @@ class _TrackerHomeState extends State<TrackerHome> {
       if (!hasPermission) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Błąd: Nie przyznano wymaganych uprawnień do GPS!")),
+            const SnackBar(content: Text("Błąd: Brak wymaganych uprawnień (GPS / Ruch i Sprawność)!")),
           );
         }
         return;
       }
 
       _csvRows.clear();
-      // Dodana kolumna baro na końcu nagłówka
       _csvRows.add("ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt,baro");
       
       _curAccX = 0; _curAccY = 0; _curAccZ = 0;
       _curGyroX = 0; _curGyroY = 0; _curGyroZ = 0;
       _curLat = ""; _curLon = ""; _curAlt = "";
-      _curBaro = -1.0; // Reset do wartości domyślnej na start sesji
+      _curBaro = -1.0; 
       
       _secondsElapsed = 0;
       _lineCount = 0;
@@ -220,12 +214,29 @@ class _TrackerHomeState extends State<TrackerHome> {
   }
 
   void _startGpsTracking() {
-    Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
+    LocationSettings locationSettings;
+    
+    if (Platform.isAndroid) {
+      locationSettings = AndroidSettings(
         accuracy: LocationAccuracy.bestForNavigation,
         distanceFilter: 0,
-      ),
-    ).listen((Position position) {
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: "IMU & GPS Recorder",
+          notificationText: "Zapis pomiarów uruchomiony w tle...",
+          notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
+          enableWakeLock: true,
+        )
+      );
+    } else {
+      locationSettings = AppleSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 0,
+        allowBackgroundLocationUpdates: true,
+      );
+    }
+
+    _gpsSubscription = Geolocator.getPositionStream(locationSettings: locationSettings)
+        .listen((Position position) {
       if (!_isRecording) return;
       if (mounted) {
         setState(() {
@@ -276,6 +287,7 @@ class _TrackerHomeState extends State<TrackerHome> {
   @override
   void dispose() {
     _timer?.cancel();
+    _gpsSubscription?.cancel();
     for (var sub in _streamSubscriptions) {
       sub.cancel();
     }
