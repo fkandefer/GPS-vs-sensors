@@ -99,7 +99,7 @@ class _TrackerHomeState extends State<TrackerHome> {
     } catch (_) {}
   }
 
-  // Ostateczna, bezkompromisowa metoda żądania uprawnień
+  // Metoda żądania uprawnień
   Future<bool> _requestPermissions() async {
     if (Platform.isAndroid) {
       Map<Permission, PermissionStatus> statuses = await [
@@ -110,8 +110,6 @@ class _TrackerHomeState extends State<TrackerHome> {
       return statuses[Permission.location] == PermissionStatus.granted &&
              statuses[Permission.sensors] == PermissionStatus.granted;
     } else if (Platform.isIOS) {
-      // NA iOS: Omijamy kapryśny pakiet permission_handler dla GPS i wymuszamy 
-      // monit natywny bezpośrednio z silnika geolocatora rozmawiającego z CLLocationManager.
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         return false;
@@ -122,7 +120,6 @@ class _TrackerHomeState extends State<TrackerHome> {
         permission = await Geolocator.requestPermission();
       }
       
-      // Zwracamy true, jeśli użytkownik kliknął "Zezwól zawsze" lub "Podczas używania"
       return permission == LocationPermission.whileInUse || 
              permission == LocationPermission.always;
     }
@@ -150,7 +147,6 @@ class _TrackerHomeState extends State<TrackerHome> {
         return;
       }
 
-      // Czyszczenie starego bufora i nagłówek CSV
       _csvRows.clear();
       _csvRows.add("Timestamp_ms;Sensor_Type;Data_Fields");
       _secondsElapsed = 0;
@@ -160,7 +156,6 @@ class _TrackerHomeState extends State<TrackerHome> {
         _isRecording = true;
       });
 
-      // Uruchomienie stoperu i pobierania pozycji GPS
       _startTimer();
       _startGpsTracking();
     }
@@ -204,7 +199,7 @@ class _TrackerHomeState extends State<TrackerHome> {
     }
   }
 
-  // Zapis do lokalnej pamięci podręcznej i wywołanie systemowego udostępniania plików
+  // Bezpieczne zapisywanie i wywoływanie Share Sheet z pozycjonowaniem origin pod iOS
   void _saveAndShareCSV() async {
     if (_csvRows.length <= 1) return;
 
@@ -215,8 +210,18 @@ class _TrackerHomeState extends State<TrackerHome> {
 
       await file.writeAsString(_csvRows.join('\n'));
 
-      // Wywołanie systemowego okna udostępniania
-      await Share.shareXFiles([XFile(file.path)], text: 'Mój log pomiarowy CSV z czujników IMU i GPS.');
+      // Pobieramy kontekst geometrii ekranu dla iOS Share Sheet Anchor
+      final box = context.findRenderObject() as RenderBox?;
+      final position = box != null 
+          ? box.localToGlobal(Offset.zero) & box.size 
+          : Rect.fromLTWH(0, 0, 10, 10);
+
+      // Wywołanie okna udostępniania
+      await Share.shareXFiles(
+        [XFile(file.path)], 
+        text: 'Mój log pomiarowy CSV z czujników IMU i GPS.',
+        sharePositionOrigin: position,
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -255,7 +260,6 @@ class _TrackerHomeState extends State<TrackerHome> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Panel stanu nagrywania
             Card(
               color: _isRecording ? Colors.red.withOpacity(0.2) : Colors.deepPurple.withOpacity(0.1),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -294,8 +298,6 @@ class _TrackerHomeState extends State<TrackerHome> {
               ),
             ),
             const SizedBox(height: 16),
-            
-            // Podgląd na żywo z sensorów
             Expanded(
               child: ListView(
                 children: [
@@ -306,8 +308,6 @@ class _TrackerHomeState extends State<TrackerHome> {
                 ],
               ),
             ),
-
-            // Główny przycisk operacyjny
             ElevatedButton(
               onPressed: _toggleRecording,
               style: ElevatedButton.styleFrom(
