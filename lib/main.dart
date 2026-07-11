@@ -36,23 +36,33 @@ class TrackerHome extends StatefulWidget {
 }
 
 class _TrackerHomeState extends State<TrackerHome> {
-  // Status nagrywania i licznik danych
   bool _isRecording = false;
   int _lineCount = 0;
   Timer? _timer;
   int _secondsElapsed = 0;
 
-  // Przechowywanie bieżących wartości sensorów
+  // Podgląd tekstowy na UI
   String _accelerometerData = "X: 0.0, Y: 0.0, Z: 0.0";
   String _gyroscopeData = "X: 0.0, Y: 0.0, Z: 0.0";
   String _gpsData = "Lat: 0.0, Lon: 0.0, Alt: 0.0, Speed: 0.0";
   String _barometerData = "1013.25 hPa (Domyślne)";
 
-  // Strumienie i subskrypcje
   final List<StreamSubscription> _streamSubscriptions = [];
-  Position? _currentPosition;
   
-  // Bufor zapisu do pliku CSV
+  // Ostatni znany stan czujników (używany do tworzenia spójnej struktury wiersza)
+  double _curAccX = 0.0;
+  double _curAccY = 0.0;
+  double _curAccZ = 0.0;
+  
+  double _curGyroX = 0.0;
+  double _curGyroY = 0.0;
+  double _curGyroZ = 0.0;
+  
+  String _curLat = "";
+  String _curLon = "";
+  String _curAlt = "";
+
+  // Bufor zapisu do pliku tekstowego
   final List<String> _csvRows = [];
 
   @override
@@ -61,7 +71,7 @@ class _TrackerHomeState extends State<TrackerHome> {
     _initLivePreviews();
   }
 
-  // Stały podgląd danych na ekranie (niezależny od nagrywania)
+  // Stały podgląd i asynchroniczna aktualizacja stanu
   void _initLivePreviews() {
     _streamSubscriptions.add(
       accelerometerEventStream(samplingPeriod: const Duration(milliseconds: 10)).listen((event) {
@@ -69,8 +79,15 @@ class _TrackerHomeState extends State<TrackerHome> {
           setState(() {
             _accelerometerData = "X: ${event.x.toStringAsFixed(2)}, Y: ${event.y.toStringAsFixed(2)}, Z: ${event.z.toStringAsFixed(2)}";
           });
-          if (_isRecording) _recordRow("ACC", "${event.x};${event.y};${event.z}");
         }
+        
+        // Aktualizacja stanu IMU
+        _curAccX = event.x;
+        _curAccY = event.y;
+        _curAccZ = event.z;
+        
+        // Zapis wiersza przy każdej zmianie wysokiej częstotliwości (IMU)
+        if (_isRecording) _recordCurrentState();
       }),
     );
 
@@ -80,8 +97,14 @@ class _TrackerHomeState extends State<TrackerHome> {
           setState(() {
             _gyroscopeData = "X: ${event.x.toStringAsFixed(2)}, Y: ${event.y.toStringAsFixed(2)}, Z: ${event.z.toStringAsFixed(2)}";
           });
-          if (_isRecording) _recordRow("GYRO", "${event.x};${event.y};${event.z}");
         }
+        
+        // Aktualizacja stanu żyroskopu
+        _curGyroX = event.x;
+        _curGyroY = event.y;
+        _curGyroZ = event.z;
+        
+        if (_isRecording) _recordCurrentState();
       }),
     );
 
@@ -92,51 +115,62 @@ class _TrackerHomeState extends State<TrackerHome> {
             setState(() {
               _barometerData = "${event.pressure.toStringAsFixed(2)} hPa";
             });
-            if (_isRecording) _recordRow("BARO", "${event.pressure}");
           }
         }),
       );
     } catch (_) {}
   }
 
-  // Metoda żądania uprawnień
+  // Funkcja budująca pojedynczy, zunifikowany wiersz danych rozdzielany tabulatorami (\t)
+  void _recordCurrentState() {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    
+    // Tworzenie struktury: ts accX accY accZ gyroX gyroY gyroZ lat lon alt
+    final buffer = StringBuffer();
+    buffer.write("$timestamp\t");
+    buffer.write("$_curAccX\t$_curAccY\t$_curAccZ\t");
+    buffer.write("$_curGyroX\t$_curGyroY\t$_curGyroZ\t");
+    buffer.write("$_curLat\t$_curLon\t$_curAlt");
+    
+    _csvRows.add(buffer.toString());
+    
+    if (mounted) {
+      setState(() {
+        _lineCount++;
+      });
+    }
+  }
+
   Future<bool> _requestPermissions() async {
     if (Platform.isAndroid) {
       Map<Permission, PermissionStatus> statuses = await [
         Permission.location,
         Permission.sensors,
       ].request();
-      
       return statuses[Permission.location] == PermissionStatus.granted &&
              statuses[Permission.sensors] == PermissionStatus.granted;
     } else if (Platform.isIOS) {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        return false;
-      }
+      if (!serviceEnabled) return false;
 
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
-      
       return permission == LocationPermission.whileInUse || 
              permission == LocationPermission.always;
     }
     return false;
   }
 
-  // Główna funkcja przycisku START / STOP
   void _toggleRecording() async {
     if (_isRecording) {
-      // STOP NAGRYWANIA
       _timer?.cancel();
       setState(() {
         _isRecording = false;
       });
       _saveAndShareCSV();
     } else {
-      // START NAGRYWANIA
       bool hasPermission = await _requestPermissions();
       if (!hasPermission) {
         if (mounted) {
@@ -147,8 +181,15 @@ class _TrackerHomeState extends State<TrackerHome> {
         return;
       }
 
+      // Reset zmiennych przed nową sesją
       _csvRows.clear();
-      _csvRows.add("Timestamp_ms;Sensor_Type;Data_Fields");
+      // Nagłówek rozdzielany tabulatorami zgodnie z Twoim wzorem
+      _csvRows.add("ts\taccX\taccY\taccZ\tgyroX\tgyroY\tgyroZ\tlat\tlon\talt");
+      
+      _curAccX = 0; _curAccY = 0; _curAccZ = 0;
+      _curGyroX = 0; _curGyroY = 0; _curGyroZ = 0;
+      _curLat = ""; _curLon = ""; _curAlt = "";
+      
       _secondsElapsed = 0;
       _lineCount = 0;
 
@@ -179,47 +220,38 @@ class _TrackerHomeState extends State<TrackerHome> {
       ),
     ).listen((Position position) {
       if (!_isRecording) return;
-      _currentPosition = position;
       if (mounted) {
         setState(() {
           _gpsData = "Lat: ${position.latitude.toStringAsFixed(5)}, Lon: ${position.longitude.toStringAsFixed(5)}, Alt: ${position.altitude.toStringAsFixed(1)}, Spd: ${position.speed.toStringAsFixed(2)}";
         });
       }
-      _recordRow("GPS", "${position.latitude};${position.longitude};${position.altitude};${position.speed};${position.accuracy}");
+      
+      // Aktualizacja globalnego stanu GPS (od teraz kolejne linie z IMU go uwzględnią)
+      _curLat = position.latitude.toString();
+      _curLon = position.longitude.toString();
+      _curAlt = position.altitude.toString();
     });
   }
 
-  void _recordRow(String sensorType, String dataFields) {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    _csvRows.add("$timestamp;$sensorType;$dataFields");
-    if (mounted) {
-      setState(() {
-        _lineCount++;
-      });
-    }
-  }
-
-  // Bezpieczne zapisywanie i wywoływanie Share Sheet z pozycjonowaniem origin pod iOS
   void _saveAndShareCSV() async {
     if (_csvRows.length <= 1) return;
 
     try {
       final directory = await getTemporaryDirectory();
-      final filename = "imu_log_${DateTime.now().millisecondsSinceEpoch}.csv";
+      // Nadajemy rozszerzenie .txt lub .csv – tabulatory świetnie czyta np. Excel lub MATLAB
+      final filename = "sensor_log_${DateTime.now().millisecondsSinceEpoch}.txt";
       final file = File('${directory.path}/$filename');
 
       await file.writeAsString(_csvRows.join('\n'));
 
-      // Pobieramy kontekst geometrii ekranu dla iOS Share Sheet Anchor
       final box = context.findRenderObject() as RenderBox?;
       final position = box != null 
           ? box.localToGlobal(Offset.zero) & box.size 
           : Rect.fromLTWH(0, 0, 10, 10);
 
-      // Wywołanie okna udostępniania
       await Share.shareXFiles(
         [XFile(file.path)], 
-        text: 'Mój log pomiarowy CSV z czujników IMU i GPS.',
+        text: 'Mój uporządkowany log macierzowy IMU i GPS.',
         sharePositionOrigin: position,
       );
     } catch (e) {
@@ -250,7 +282,7 @@ class _TrackerHomeState extends State<TrackerHome> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('IMU & GPS CSV Recorder'),
+        title: const Text('Matrix Sensor Recorder'),
         centerTitle: true,
         elevation: 0,
         backgroundColor: Colors.transparent,
@@ -268,7 +300,7 @@ class _TrackerHomeState extends State<TrackerHome> {
                 child: Column(
                   children: [
                     Text(
-                      _isRecording ? "NAGRYWANIE AKTYWNE" : "URZĄDZENIE GOTOWE",
+                      _isRecording ? "NAGRYWANIE MACIERZY" : "URZĄDZENIE READY",
                       style: TextStyle(
                         fontSize: 18, 
                         fontWeight: FontWeight.bold, 
@@ -281,13 +313,13 @@ class _TrackerHomeState extends State<TrackerHome> {
                       children: [
                         Column(
                           children: [
-                            const Text("Czas trwania", style: TextStyle(color: Colors.grey)),
+                            const Text("Czas", style: TextStyle(color: Colors.grey)),
                             Text(_formatTime(_secondsElapsed), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
                           ],
                         ),
                         Column(
                           children: [
-                            const Text("Zapisane linie", style: TextStyle(color: Colors.grey)),
+                            const Text("Liczba próbek", style: TextStyle(color: Colors.grey)),
                             Text("$_lineCount", style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
                           ],
                         ),
@@ -301,10 +333,10 @@ class _TrackerHomeState extends State<TrackerHome> {
             Expanded(
               child: ListView(
                 children: [
-                  _buildSensorCard("Akcelerometr (IMU)", _accelerometerData, Icons.import_export, Colors.blueAccent),
-                  _buildSensorCard("Żyroskop (IMU)", _gyroscopeData, Icons.sync, Colors.tealAccent),
+                  _buildSensorCard("Akcelerometr", _accelerometerData, Icons.import_export, Colors.blueAccent),
+                  _buildSensorCard("Żyroskop", _gyroscopeData, Icons.sync, Colors.tealAccent),
                   _buildSensorCard("Lokalizacja (GPS)", _gpsData, Icons.gps_fixed, Colors.greenAccent),
-                  _buildSensorCard("Barometr (Ciśnienie)", _barometerData, Icons.compress, Colors.purpleAccent),
+                  _buildSensorCard("Barometr", _barometerData, Icons.compress, Colors.purpleAccent),
                 ],
               ),
             ),
@@ -316,7 +348,7 @@ class _TrackerHomeState extends State<TrackerHome> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               child: Text(
-                _isRecording ? "STOP I UDOSTĘPNIJ PLIK" : "START NAGRYWANIA",
+                _isRecording ? "ZAKOŃCZ I EKSPORTUJ LOG" : "URUCHOM ZAPIS DANYCH",
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
               ),
             ),
