@@ -26,8 +26,14 @@ workflows:
           
           # Wstrzykujemy flagi preprocesora bezpośrednio do konfiguracji Xcode zamiast Podfile
           echo "GCC_PREPROCESSOR_DEFINITIONS =\$(inherited) PERMISSION_LOCATION=1 PERMISSION_SENSORS=1" >> ios/Flutter/Generated.xcconfig
+          
+          # Wymuszamy całkowite wyłączenie podpisywania kodu na poziomie ustawień kompilacji Xcode
+          echo "CODE_SIGNING_ALLOWED = NO" >> ios/Flutter/Generated.xcconfig
+          echo "CODE_SIGNING_REQUIRED = NO" >> ios/Flutter/Generated.xcconfig
+          echo "CODE_SIGN_IDENTITY = " >> ios/Flutter/Generated.xcconfig
       - name: Build iOS project without signing
         script: |
-          flutter build ios --no-codesign --release
+          # Dodajemy jawne wymuszenie parametrów dla Xcode, aby zignorował brak Team ID
+          flutter build ios --no-codesign --release --extra-front-end-options=--implicit-dwes --xcconfig-overrides=ios/Flutter/Generated.xcconfig
     artifacts:
       - build/ios/iphoneos/Runner.app
