@@ -62,6 +62,9 @@ class _TrackerHomeState extends State<TrackerHome> {
   String _curLon = "";
   String _curAlt = "";
 
+  // Bieżąca wartość barometru (domyślnie -1 w przypadku braku sensora)
+  double _curBaro = -1.0;
+
   // Bufor zapisu do pliku CSV
   final List<String> _csvRows = [];
 
@@ -105,25 +108,36 @@ class _TrackerHomeState extends State<TrackerHome> {
       }),
     );
 
-    try {
-      _streamSubscriptions.add(
-        barometerEventStream(samplingPeriod: const Duration(milliseconds: 20)).listen((event) {
+    // Bezpieczny nasłuch barometru odporny na brak sensora w urządzeniu
+    _streamSubscriptions.add(
+      barometerEventStream(samplingPeriod: const Duration(milliseconds: 20)).listen(
+        (event) {
           if (mounted) {
             setState(() {
               _barometerData = "${event.pressure.toStringAsFixed(2)} hPa";
             });
           }
-        }),
-      );
-    } catch (_) {}
+          _curBaro = event.pressure;
+        },
+        onError: (error) {
+          if (mounted) {
+            setState(() {
+              _barometerData = "Brak czujnika barometru";
+            });
+          }
+          _curBaro = -1.0; // Wymuszenie wartości -1 przy błędzie/braku sprzętu
+        },
+        cancelOnError: false,
+      ),
+    );
   }
 
   // Budowanie zunifikowanego wiersza CSV (rozdzielanego przecinkami)
   void _recordCurrentState() {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     
-    // Format: ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt
-    final row = "$timestamp,$_curAccX,$_curAccY,$_curAccZ,$_curGyroX,$_curGyroY,$_curGyroZ,$_curLat,$_curLon,$_curAlt";
+    // Format: ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt,baro
+    final row = "$timestamp,$_curAccX,$_curAccY,$_curAccZ,$_curGyroX,$_curGyroY,$_curGyroZ,$_curLat,$_curLon,$_curAlt,$_curBaro";
     
     _csvRows.add(row);
     
@@ -175,11 +189,13 @@ class _TrackerHomeState extends State<TrackerHome> {
       }
 
       _csvRows.clear();
-      _csvRows.add("ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt");
+      // Dodana kolumna baro na końcu nagłówka
+      _csvRows.add("ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt,baro");
       
       _curAccX = 0; _curAccY = 0; _curAccZ = 0;
       _curGyroX = 0; _curGyroY = 0; _curGyroZ = 0;
       _curLat = ""; _curLon = ""; _curAlt = "";
+      _curBaro = -1.0; // Reset do wartości domyślnej na start sesji
       
       _secondsElapsed = 0;
       _lineCount = 0;
@@ -238,7 +254,6 @@ class _TrackerHomeState extends State<TrackerHome> {
           ? box.localToGlobal(Offset.zero) & box.size 
           : Rect.fromLTWH(0, 0, 10, 10);
 
-      // Udostępniamy wyłącznie plik (brak opcjonalnego parametru tekstowego)
       await Share.shareXFiles(
         [XFile(file.path)], 
         sharePositionOrigin: position,
