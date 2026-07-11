@@ -175,7 +175,6 @@ class _TrackerHomeState extends State<TrackerHome> {
       }
 
       _csvRows.clear();
-      // Czystszy, standardowy nagłówek CSV rozdzielany przecinkami
       _csvRows.add("ts,accX,accY,accZ,gyroX,gyroY,gyroZ,lat,lon,alt");
       
       _curAccX = 0; _curAccY = 0; _curAccZ = 0;
@@ -229,7 +228,6 @@ class _TrackerHomeState extends State<TrackerHome> {
 
     try {
       final directory = await getTemporaryDirectory();
-      // Prawidłowe rozszerzenie .csv
       final filename = "sensor_log_${DateTime.now().millisecondsSinceEpoch}.csv";
       final file = File('${directory.path}/$filename');
 
@@ -240,9 +238,9 @@ class _TrackerHomeState extends State<TrackerHome> {
           ? box.localToGlobal(Offset.zero) & box.size 
           : Rect.fromLTWH(0, 0, 10, 10);
 
+      // Udostępniamy wyłącznie plik (brak opcjonalnego parametru tekstowego)
       await Share.shareXFiles(
         [XFile(file.path)], 
-        text: 'Mój uporządkowany log CSV (IMU + GPS).',
         sharePositionOrigin: position,
       );
     } catch (e) {
