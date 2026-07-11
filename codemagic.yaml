@@ -1,0 +1,26 @@
+workflows:
+  ios-build-workflow:
+    name: iOS Unsigned Build
+    instance_type: mac_mini_m1
+    max_build_duration: 60
+    environment:
+      flutter: stable
+      xcode: latest
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+    scripts:
+      - name: Set up local properties
+        script: |
+          echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
+      - name: Get Flutter packages
+        script: |
+          flutter packages pub get
+      - name: Build iOS project without signing
+        script: |
+          flutter build ios --no-codesign --release
+    artifacts:
+      - build/ios/iphoneos/Runner.app
