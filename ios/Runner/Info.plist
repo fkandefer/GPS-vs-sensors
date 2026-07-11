@@ -66,5 +66,11 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+    <string>Aplikacja wymaga dostępu do lokalizacji w celu synchronizacji danych przestrzennych z czujnikami IMU.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Aplikacja wymaga stałego dostępu do lokalizacji w celu poprawnego nagrywania trasy w pliku CSV.</string>
+    <key>NSMotionUsageDescription</key>
+    <string>Aplikacja wymaga dostępu do czujników ruchu (akcelerometr, żyroskop), aby rejestrować parametry fizyczne na potrzeby badań.</string>
 </dict>
 </plist>
