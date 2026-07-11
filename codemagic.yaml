@@ -21,21 +21,12 @@ workflows:
           flutter packages pub get
       - name: Pre-generate Podfile and Inject Permission Macros
         script: |
-          # Wymuszenie na flutterze wygenerowania domyślnego Podfile
-          cd ios && flutter build ios --config-only
+          cd ios
+          # Generujemy czysty Podfile
+          flutter build ios --config-only
           
-          # Dopisywanie makr preprocessora dla uprawnień lokalizacji i czujników ruchu
-          cat << 'EOF' >> Podfile
-
-          post_install do |installer|
-            installer.pods_project.targets.each do |target|
-              flutter_additional_ios_build_settings(target)
-              target.build_configurations.each do |config|
-                config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)', 'PERMISSION_LOCATION=1', 'PERMISSION_SENSORS=1']
-              end
-            end
-          end
-          EOF
+          # Wstrzykujemy makra GCC bezpośrednio do istniejącego bloku post_install
+          sed -i '' "s/flutter_additional_ios_build_settings(target)/flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do { |config| config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['\$(inherited)', 'PERMISSION_LOCATION=1', 'PERMISSION_SENSORS=1'] }/g" Podfile
       - name: Build iOS project without signing
         script: |
           flutter build ios --no-codesign --release
